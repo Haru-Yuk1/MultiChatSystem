@@ -1,0 +1,392 @@
+package Server;
+
+
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.io.*;
+import java.lang.reflect.Array;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Date;
+
+public class ServerChat extends JFrame {
+    private static final int PORT = 8888;
+
+    private JTextArea serverTa = new JTextArea(10, 20);
+    private JTextArea clientList = new JTextArea(10,20);
+    private JScrollPane jspSeverTa = new JScrollPane(serverTa);
+    private JScrollPane jspClientList = new JScrollPane(clientList);
+
+    private JLabel clientListLabel = new JLabel("在线用户列表");
+
+    private JPanel clientListPanel = new JPanel();
+
+    private JPanel btnTool = new JPanel();
+    private JButton startBtn = new JButton("启动服务器");
+    private JButton stopBtn = new JButton("停止服务器");
+    private JButton checkFilesBtn = new JButton("查看文件");
+
+    private ServerSocket serverSocket = null;
+
+    private Socket socket = null;
+    private DataInputStream dis = null;
+    private DataOutputStream dos = null;
+
+    private Boolean isStart = false;
+
+    private ArrayList<File> files=new ArrayList<>();
+
+//    private SystemData systemData = SystemData.getInstance();
+
+//    private ArrayList<ClientConn> ccList = systemData.getCcList();
+
+    private ArrayList<ClientConn> ccList = new ArrayList<>();
+
+
+    public ServerChat() {
+        this.setTitle("服务器端");
+        this.add(jspSeverTa, "Center");
+
+        clientListPanel.setLayout(new BorderLayout());
+        clientListPanel.add(clientListLabel, BorderLayout.NORTH);
+        clientListPanel.add(jspClientList, BorderLayout.CENTER);
+        btnTool.add(startBtn);
+        btnTool.add(stopBtn);
+        btnTool.add(checkFilesBtn);
+        this.add(btnTool, "South");
+        this.add(btnTool, "South");
+        this.add(clientListPanel, "East");
+
+        this.setBounds(200, 200, 600, 600);
+        this.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+        //设置文本域不可编辑
+        serverTa.setEditable(false);
+        clientList.setEditable(false);
+        //设置窗口可见
+        this.setVisible(true);
+
+        serverTa.append("服务器还没启动，请点击启动按钮\n");
+
+        //文件列表初始化，将服务器端的files文件夹下的文件加入到files列表中
+        File Directory = new File("files");
+        if(Directory.exists()){
+            File[] files = Directory.listFiles();
+            for(File SecondDirectory:files) {
+                for (File file : SecondDirectory.listFiles()) {
+                    this.files.add(file);
+
+                }
+            }
+        }
+        //启动服务器按钮添加监听
+        startBtn.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+
+                try {
+                    if (serverSocket == null) {
+                        isStart = true;
+                        serverSocket = new ServerSocket(PORT);
+                        //启动服务器使用线程进行监听
+                        new Thread(()->{
+                            startServer();
+                        }).start();
+                        serverTa.append("服务器启动成功\n");
+                    }
+                    else{
+                        serverTa.append("服务器已经启动了\n");
+                    }
+                } catch (IOException e2) {
+                    throw new RuntimeException(e2);
+                }
+            }
+        });
+        //停止服务器按钮添加监听
+        stopBtn.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                try {
+                    if(serverSocket!=null){
+                        isStart=false;
+                        stopServer();
+                        serverTa.append("服务器已停止\n");
+                    }else{
+                        serverTa.append("服务器还没启动，请点击启动按钮\n");
+                    }
+
+                } catch (IOException ioException) {
+                    ioException.printStackTrace();
+                }
+            }
+        });
+
+        //查看文件按钮添加监听
+        checkFilesBtn.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                showFileList();
+            }
+        });
+
+
+    }
+
+    //服务器启动的方法
+    public void startServer(){
+
+        //等待客户端连接
+        while(isStart){
+            try {
+                socket = serverSocket.accept();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+            ccList.add(new ClientConn(socket));
+
+        }
+    }
+
+    //服务器停止的方法
+    public void stopServer() throws IOException {
+        if (socket != null) {
+            socket.close();
+        }
+        if (serverSocket != null) {
+            serverSocket.close();
+        }
+    }
+
+
+    //服务器发送消息的方法
+    public void sendMsg(String msg) throws IOException {
+        if (socket != null) {
+            socket.getOutputStream().write(msg.getBytes());
+        }
+    }
+
+    //服务器接收消息的方法
+    public void receiveMsg() {
+        try {
+            dis = new DataInputStream(socket.getInputStream());
+            String msg = dis.readUTF();
+            System.out.println(msg);
+            serverTa.append(msg + "\n");
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    //服务器端的客户端连接线程
+    public class ClientConn implements Runnable{
+        Socket socket=null;
+        String username=null;
+        Thread th=null;
+        DataInputStream dis=null;
+        public ClientConn(Socket socket){
+            this.socket=socket;
+            this.th=(new Thread(this));
+            th.start();
+        }
+
+        @Override
+        public void run() {
+            try{
+                dis=new DataInputStream(socket.getInputStream());
+                username = dis.readUTF();  // 接收用户名
+
+                //服务器端输出用户连接信息
+                System.out.println(username+socket.getInetAddress() + ":" + socket.getPort() + "连接到服务器");
+                serverTa.append(username+socket.getInetAddress() + ":" + socket.getPort() + "连接到服务器\n");
+                //广播用户上线
+                broadcast(username+"已上线");
+
+                //显示在线用户列表
+                showClientList();
+
+
+                String str=dis.readUTF();
+
+                while(!str.isEmpty()){
+                    if(str.equals("REQUEST_USER_LIST")){
+                        System.out.println(ccList.size());
+                        sendClientList();
+
+                    }
+                    else if (str.equals("REQUEST_FILE_LIST")){
+                        System.out.println(files.size());
+                        sendFileList();
+                    }
+                    else if (str.equals("SEND_FILE")){
+                        String userName=dis.readUTF();
+                        String fileName=dis.readUTF();
+                        File Directory = new File("files");
+                        if(!Directory.exists()){
+                            Directory.mkdir();
+                        }
+                        File userDirectory = new File(Directory,userName);
+                        if(!userDirectory.exists()){
+                            userDirectory.mkdir();
+                        }
+                        File file = new File(userDirectory, fileName);
+
+                        try (FileOutputStream fos = new FileOutputStream(file)) {
+                            byte[] buffer = new byte[1024];
+                            int length;
+                            while ((length = dis.read(buffer)) > 0) {
+                                fos.write(buffer, 0, length);
+                                if(length<1024){
+                                    break;
+                                }
+                            }
+                            System.out.println("文件接收成功");
+                        }
+                        System.out.println("收到"+userName+"传输的文件："+fileName);
+                        serverTa.append("收到"+userName+"传输的文件："+fileName+"\n");
+                        files.add(file);
+                    }
+                    else{
+                        System.out.println(str);
+                        serverTa.append(str+"\n");
+                        broadcast(str);
+                    }
+
+                    str=dis.readUTF();
+
+                }
+
+            } catch (IOException e) {
+                destroy();
+                throw new RuntimeException(e);
+            }
+        }
+
+        //销毁方法
+        public void destroy(){
+            try {
+                dis=new DataInputStream(socket.getInputStream());
+                //服务器端输出用户断开信息
+                System.out.println(username+socket.getInetAddress() + ":" + socket.getPort() + "断开连接");
+                serverTa.append(username+socket.getInetAddress() + ":" + socket.getPort() + "断开连接\n");
+
+                //用户下线
+                clientOffline(username);
+                //广播用户下线
+                broadcast(username+"已下线");
+                //发送用户列表
+                sendClientList();
+
+
+                if (th!=null) {
+                    th.interrupt();
+                }
+                if(socket!=null){
+                    socket.close();
+                }
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        public String getUsername() {
+            return username;
+        }
+    }
+
+    //服务器端发送用户列表的方法
+    public void sendClientList() throws IOException {
+        StringBuilder userList = new StringBuilder();
+        for (ClientConn cc : ccList) {
+            userList.append(cc.getUsername()).append("\n");
+        }
+        //广播用户列表
+        for (ClientConn cc : ccList) {
+            DataOutputStream dos = new DataOutputStream(cc.socket.getOutputStream());
+            dos.writeUTF("RESPONSE_USER_LIST");
+            dos.flush();
+            dos.writeUTF(userList.toString());
+            dos.flush();
+        }
+    }
+    //服务器端发送文件列表的方法
+    public void sendFileList() throws IOException {
+        StringBuilder fileList = new StringBuilder();
+        for(File file:files){
+            fileList.append(file.getParent().substring(6)+"/"+file.getName()+"\n");
+        }
+        System.out.println(fileList.toString());
+        //广播文件列表
+        for (ClientConn cc : ccList) {
+
+            DataOutputStream dos = new DataOutputStream(cc.socket.getOutputStream());
+            dos.writeUTF("RESPONSE_FILE_LIST");
+            dos.flush();
+            dos.writeUTF(fileList.toString());
+            dos.flush();
+
+        }
+    }
+    //服务器端广播消息的方法
+    public void broadcast(String msg) throws IOException {
+        for (ClientConn cc : ccList) {
+            dos=new DataOutputStream(cc.socket.getOutputStream());
+            dos.writeUTF(msg);
+        }
+    }
+
+    //显示在线用户列表
+    public void showClientList(){
+        //清空在线用户列表
+        clientList.setText("");
+        //显示在线用户列表
+        for(ClientConn cc:ccList){
+            clientList.append(cc.username+"\n");
+            //将所有用户广播出去
+
+//            try {
+//                broadcast(cc.username);
+//            } catch (IOException e) {
+//                throw new RuntimeException(e);
+//            }
+        }
+    }
+
+
+    //服务器端中客户下线的方法
+    public void clientOffline(String username){
+        for(ClientConn cc:ccList){
+            if(cc.username.equals(username)){
+                ccList.remove(cc);
+                break;
+            }
+        }
+        showClientList();
+    }
+
+    //在新窗口显示文件列表
+    public void showFileList(){
+        JFrame fileFrame = new JFrame("文件列表");
+        fileFrame.setLayout(new BorderLayout());
+        JTextArea fileTa = new JTextArea(10, 20);
+        JScrollPane fileJsp = new JScrollPane(fileTa);
+        fileFrame.add(fileJsp, "Center");
+        fileFrame.setBounds(600, 600, 250, 300);
+        fileFrame.setVisible(true);
+        fileTa.setEditable(false);
+        StringBuilder sb = new StringBuilder();
+        for(File file:files){
+            sb.append(file.getParent().substring(6)+"/"+file.getName()+"\n");
+
+        }
+        fileTa.setText(sb.toString());
+    }
+    public static void main(String[] args) {
+        ServerChat serverChat = new ServerChat();
+    }
+}
