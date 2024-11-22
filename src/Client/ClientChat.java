@@ -1,8 +1,5 @@
 package Client;
 
-
-
-
 import javax.imageio.IIOException;
 import javax.swing.*;
 import java.awt.*;
