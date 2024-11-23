@@ -10,11 +10,22 @@ import java.io.*;
 import java.lang.reflect.Array;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.ArrayList;
-import java.util.Date;
+import java.util.*;
 
 public class ServerChat extends JFrame {
-    private static final int PORT = 8888;
+    //服务器端口号
+    private static int serverPORT;
+    //使用static静态代码块初始化服务器端口号
+    static {
+        Properties prop=new Properties();
+        try {
+            prop.load(new FileReader("chat.properties"));
+            serverPORT=Integer.parseInt(prop.getProperty("serverPort"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+    }
 
     private JTextArea serverTa = new JTextArea(10, 20);
     private JTextArea clientList = new JTextArea(10,20);
@@ -46,6 +57,8 @@ public class ServerChat extends JFrame {
 
     private ArrayList<ClientConn> ccList = new ArrayList<>();
 
+    // 新增组管理逻辑
+    private HashMap<String, ArrayList<ClientConn>> groups = new HashMap<>();
 
     public ServerChat() {
         this.setTitle("服务器端");
@@ -91,12 +104,13 @@ public class ServerChat extends JFrame {
                 try {
                     if (serverSocket == null) {
                         isStart = true;
-                        serverSocket = new ServerSocket(PORT);
+                        serverSocket = new ServerSocket(serverPORT);
+
                         //启动服务器使用线程进行监听
                         new Thread(()->{
                             startServer();
                         }).start();
-                        serverTa.append("服务器启动成功\n");
+                        serverTa.append("服务器"+serverSocket.getLocalPort()+"启动成功\n");
                     }
                     else{
                         serverTa.append("服务器已经启动了\n");
@@ -162,6 +176,7 @@ public class ServerChat extends JFrame {
     }
 
 
+
     //服务器发送消息的方法
     public void sendMsg(String msg) throws IOException {
         if (socket != null) {
@@ -198,8 +213,26 @@ public class ServerChat extends JFrame {
         @Override
         public void run() {
             try{
-                dis=new DataInputStream(socket.getInputStream());
-                username = dis.readUTF();  // 接收用户名
+                dis = new DataInputStream(socket.getInputStream());
+                dos = new DataOutputStream(socket.getOutputStream());
+                while (true) {
+                    String msg = dis.readUTF();
+                    if (msg.startsWith("CHECK_USERNAME#")) {
+                        String usernameToCheck = msg.split("#")[1];
+                        if (isUsernameTaken(usernameToCheck)) {
+                            dos.writeUTF("USERNAME_TAKEN");
+                        } else {
+                            dos.writeUTF("USERNAME_OK");
+                        }
+                        dos.flush();
+                    } else {
+                        username = msg;
+                        break;
+                    }
+                }
+                System.out.println("username:"+username);
+//                dis=new DataInputStream(socket.getInputStream());
+//                username = dis.readUTF();  // 接收用户名
 
                 //服务器端输出用户连接信息
                 System.out.println(username+socket.getInetAddress() + ":" + socket.getPort() + "连接到服务器");
@@ -214,7 +247,37 @@ public class ServerChat extends JFrame {
                 String str=dis.readUTF();
 
                 while(!str.isEmpty()){
-                    if(str.equals("REQUEST_USER_LIST")){
+                    if(str.startsWith("PRIVATE#")){
+                        String[] strs = str.split("#");
+                        String toUser = strs[1];
+                        String msg = strs[2];
+                        //找到要发送的用户
+                        for(ClientConn cc:ccList){
+                            if(cc.username.equals(toUser)){
+                                dos=new DataOutputStream(cc.socket.getOutputStream());
+                                dos.writeUTF(username+"悄悄对你说："+msg);
+                            }
+                        }
+                    }
+                    else if(str.startsWith("CREATE_GROUP#")){
+                        // 格式：CREATE_GROUP#groupName#用户列表
+                        String[] parts=str.split("#",3);
+                        String groupName=parts[1];
+                        String[] groupMembers=parts[2].split(",");
+                        System.out.println(parts[2]);
+                        createGroup(groupName,groupMembers);
+
+                    } else if (str.startsWith("GROUP_SERVER#")) {
+                        // 格式：GROUP#groupName#msg
+                        System.out.println("群聊消息：" + str);
+                        String[] parts = str.split("#", 3);
+                        String groupName = parts[1];
+                        String msg = parts[2];
+//                        System.out.println("群聊消息：" + msg);
+                        broadcastGroup(groupName, "GROUP_CLIENT#"+groupName+"#"+msg);
+                        broadcastGroup(groupName, "群聊"+groupName + ":" + msg);
+
+                    } else if(str.equals("REQUEST_USER_LIST")){
                         System.out.println(ccList.size());
                         sendClientList();
 
@@ -235,23 +298,50 @@ public class ServerChat extends JFrame {
                             userDirectory.mkdir();
                         }
                         File file = new File(userDirectory, fileName);
-
+                        dis = new DataInputStream(socket.getInputStream());
                         try (FileOutputStream fos = new FileOutputStream(file)) {
                             byte[] buffer = new byte[1024];
                             int length;
                             while ((length = dis.read(buffer)) > 0) {
                                 fos.write(buffer, 0, length);
-                                if(length<1024){
-                                    break;
-                                }
                             }
                             System.out.println("文件接收成功");
                         }
                         System.out.println("收到"+userName+"传输的文件："+fileName);
                         serverTa.append("收到"+userName+"传输的文件："+fileName+"\n");
                         files.add(file);
-                    }
-                    else{
+                    } else if (str.startsWith("DOWNLOAD_FILE#")) {
+                        String[] parts = str.split("#");
+
+                        String userName = parts[1];
+                        String fileName = parts[2];
+                        File Directory = new File("files");
+                        File userDirectory = new File(Directory, userName);
+                        File file = new File(userDirectory, fileName);
+                        System.out.println("文件路径："+file.getPath());
+                        dos = new DataOutputStream(socket.getOutputStream());
+                        dos.writeUTF("RESPONSE_DOWNLOAD_FILE");
+                        if (file.exists()) {
+                            byte[] buffer = new byte[1024];
+                            try (FileInputStream fis = new FileInputStream(file)) {
+                                int length;
+                                while ((length = fis.read(buffer)) > 0) {
+                                    dos.write(buffer, 0, length);
+//                                    System.out.println("文件发送中");
+//                                    if (length < 1024) {
+//                                        break;
+//                                    }
+                                }
+                                dos.flush();
+                                System.out.println("文件发送成功");
+
+                            }
+                        } else {
+                            dos.writeUTF("文件不存在");
+                            dos.flush();
+                        }
+
+                    } else{
                         System.out.println(str);
                         serverTa.append(str+"\n");
                         broadcast(str);
@@ -297,6 +387,61 @@ public class ServerChat extends JFrame {
         public String getUsername() {
             return username;
         }
+    }
+    //服务器判断用户名是否重复
+    private boolean isUsernameTaken(String username) {
+        if (ccList.isEmpty()) {
+            return false;
+        }
+        for (ClientConn cc : ccList) {
+            if (cc.getUsername() == null) {
+                continue;
+            }
+            if (cc.getUsername().equals(username)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //服务器端创建群组的方法
+    private void createGroup(String groupName, String[] groupMembers) {
+        ArrayList<ClientConn> group = new ArrayList<>();
+        for (String member : groupMembers) {
+            for (ClientConn cc : ccList) {
+                if (cc.username.equals(member)) {
+//                    System.out.println("找到用户"+member);
+                    group.add(cc);
+                    break;
+                }
+            }
+        }
+        groups.put(groupName, group);
+
+
+        //广播群组创建成功，从而让所有客户端新建窗口，显示群组聊天
+        broadcastGroup(groupName, "RESPONSE_CREATE_GROUP");
+        broadcastGroup(groupName, groupName);
+
+        System.out.println(groupName+"群组创建成功");
+        serverTa.append(groupName+"群组创建成功");
+    }
+    //群组消息广播
+    private void broadcastGroup(String groupName, String msg) {
+//        System.out.println("广播群聊log："+groupName+msg);
+        ArrayList<ClientConn> group = groups.get(groupName);
+        try {
+            for (ClientConn cc : group) {
+
+                dos = new DataOutputStream(cc.socket.getOutputStream());
+                dos.writeUTF(msg);
+
+//                System.out.println("发送消息成功");
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+//        System.out.println(groupName+"群组消息广播成功");
     }
 
     //服务器端发送用户列表的方法
